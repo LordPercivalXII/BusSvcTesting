@@ -1,9 +1,9 @@
 import os
 from dotenv import load_dotenv
 from pathlib import Path
-from TransportAPI.APIHandler import TransportAPIHandler
-from TransportAPI.BusStopInfo import store_bus_stop_data
-from TransportAPI.BusService import store_bus_svc_data
+from TransportAPI2.APIHandler import TransportAPIHandler
+# from TransportAPI.BusStopInfo import store_bus_stop_data
+# from TransportAPI.BusService import store_bus_svc_data
 
 KEY_BUS_STOPS = ["77009", "77011", "77191", "65191", "65199"]
 
@@ -18,8 +18,8 @@ ENV_LIST = [API_KEY_LTA]
 
 # API Handling & Data Caching
 api_handler = TransportAPIHandler(API_KEY_LTA)
-store_bus_stop_data(API_KEY_LTA)
-store_bus_svc_data(API_KEY_LTA)
+# store_bus_stop_data(API_KEY_LTA)
+# store_bus_svc_data(API_KEY_LTA)
 
 
 user_input = 0

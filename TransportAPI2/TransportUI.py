@@ -1,11 +1,8 @@
 import sys
-from PyQt5.QtGui import QResizeEvent
-from PyQt5.QtWidgets import QMainWindow, QApplication, QTableWidgetItem, QTableWidget
-from TransportAPI.BusArrival import request_bus_stop_timing
-from TransportAPI.BusRoute import get_bus_svc_route
-from TransportAPI.BusService import return_bus_svc_json, get_bus_svc_list, get_bus_svc_directions
-from TransportAPI.BusStopInfo import request_bus_stop_name_lta, return_bus_stop_name_json
-from Qt5UI.UI_TransportUI import Ui_TransportService
+from PyQt6.QtGui import QResizeEvent
+from PyQt6.QtWidgets import QMainWindow, QApplication, QTableWidgetItem, QTableWidget
+from TransportAPI2.APIHandler import TransportAPIHandler
+from Qt6UI.UI_TransportUI import Ui_TransportService
 
 
 class TransportMenu(QMainWindow):
@@ -18,12 +15,14 @@ class TransportMenu(QMainWindow):
         # Setup UI
         self.ui.setupUi(self)
 
+        self.api_handler = TransportAPIHandler(parser[0])
+
         # Lock Cells
         self.lockBusStopTableCells()
         self.lockBusRouteTableCells()
 
         # Setup Bus Svc List
-        self.ui.BusSvcList.addItems(get_bus_svc_list())
+        self.ui.BusSvcList.addItems(self.api_handler.get_bus_svc_list())
 
     def parseBusStopNumber(self):
         bus_count = 0
@@ -44,10 +43,10 @@ class TransportMenu(QMainWindow):
 
         # Request For Data
 
-        header_check = request_bus_stop_name_lta(bus_stop_num, self.parser[0])
+        header_check = self.api_handler.request_bus_stop_name(bus_stop_num)
         fallback_header = not header_check[2]
-        bus_stop_list = request_bus_stop_timing(
-            bus_stop_num, self.parser[0], bus_svc_list, fallback_header)
+        bus_stop_list = self.api_handler.request_bus_stop_timing(
+            bus_stop_num, bus_svc_list, fallback_header)
 
         # Clear Table
         self.ui.BusStopTable.clear()
@@ -79,19 +78,19 @@ class TransportMenu(QMainWindow):
             self.ui.BusStopTable.setItem(row_designation[0], 0, QTableWidgetItem(f"Service [{bus[0]}]"))
             self.ui.BusStopTable.setItem(row_designation[0], 1, QTableWidgetItem(f"{bus[1]}"))
 
-            svc_info_returner = return_bus_svc_json(bus[0], 1)
+            svc_info_returner = self.api_handler.return_bus_svc_json(bus[0], 1)
 
             if svc_info_returner[4] != bus[18] and svc_info_returner[5] != bus[19]:
-                svc_info_returner = return_bus_svc_json(bus[0], 2)
+                svc_info_returner = self.api_handler.return_bus_svc_json(bus[0], 2)
 
             if svc_info_returner[7] is False:
-                svc_info = f"{return_bus_stop_name_json(svc_info_returner[4])[0]} >>> " \
-                           f"{return_bus_stop_name_json(svc_info_returner[5])[0]} " \
+                svc_info = f"{self.api_handler.return_bus_stop_name_json(svc_info_returner[4])[0]} >>> " \
+                           f"{self.api_handler.return_bus_stop_name_json(svc_info_returner[5])[0]} " \
                            f"[{svc_info_returner[3]}]"
 
             elif svc_info_returner[7] is True:
                 svc_info = f"Loop @ {svc_info_returner[6]} to " \
-                           f"{return_bus_stop_name_json(svc_info_returner[5])[0]} " \
+                           f"{self.api_handler.return_bus_stop_name_json(svc_info_returner[5])[0]} " \
                            f"[{svc_info_returner[3]}]"
 
             else:
@@ -139,15 +138,15 @@ class TransportMenu(QMainWindow):
         bus_svc = self.ui.BusSvcList.currentText()
         print(f"DEBUG: BUS_SVC {bus_svc} CACHE {self.svc_query_cache}")
         if bus_svc != "" and bus_svc != self.svc_query_cache:
-            svc_json = get_bus_svc_directions(bus_svc)
+            svc_json = self.api_handler.get_bus_svc_directions(bus_svc)
             svc_list = []
 
             for svc in svc_json:
                 if svc[6] is True:
                     svc_list.append(f"[{svc[1]}]: Loop @ {svc[5]}")
                 else:
-                    svc_list.append(f"[{svc[1]}]: {return_bus_stop_name_json(svc[3])[0]} --> "
-                                    f"{return_bus_stop_name_json(svc[4])[0]}")
+                    svc_list.append(f"[{svc[1]}]: {self.api_handler.return_bus_stop_name_json(svc[3])[0]} --> "
+                                    f"{self.api_handler.return_bus_stop_name_json(svc[4])[0]}")
 
             self.ui.SvcDirList.clear()
             self.ui.SvcDirList.addItems(svc_list)
@@ -163,8 +162,8 @@ class TransportMenu(QMainWindow):
 
         svc_info = ''
 
-        svc_info_route = get_bus_svc_directions(svc_num)
-        svc_route = get_bus_svc_route(svc_num, svc_dir)
+        svc_info_route = self.api_handler.get_bus_svc_directions(svc_num)
+        svc_route = self.api_handler.get_bus_svc_route(svc_num, svc_dir)
 
         for svc in svc_info_route:
             if svc[6] is True:
@@ -174,7 +173,7 @@ class TransportMenu(QMainWindow):
                 if str(svc[1]) != svc_dir:
                     continue
                 else:
-                    svc_info = f"[{svc[1]}]: {return_bus_stop_name_json(svc[3])[0]} --> {return_bus_stop_name_json(svc[4])[0]}"
+                    svc_info = f"[{svc[1]}]: {self.api_handler.return_bus_stop_name_json(svc[3])[0]} --> {self.api_handler.return_bus_stop_name_json(svc[4])[0]}"
 
         print(f"[{svc_num}]: {svc_info}")
 
@@ -199,9 +198,9 @@ class TransportMenu(QMainWindow):
 
                 continue
 
-            print(f"{i + 1 - svc_route_bypass}. {return_bus_stop_name_json(svc_route[str(i + 1)][0])[0]} | {svc_route[str(i + 1)][1]} KM")
+            print(f"{i + 1 - svc_route_bypass}. {self.api_handler.return_bus_stop_name_json(svc_route[str(i + 1)][0])[0]} | {svc_route[str(i + 1)][1]} KM")
             self.ui.BusSvcTable.setItem(i + 2 - svc_route_bypass, 0, QTableWidgetItem(f'{i + 1 - svc_route_bypass}.'))
-            self.ui.BusSvcTable.setItem(i + 2 - svc_route_bypass, 1, QTableWidgetItem(return_bus_stop_name_json(svc_route[str(i + 1)][0])[0]))
+            self.ui.BusSvcTable.setItem(i + 2 - svc_route_bypass, 1, QTableWidgetItem(self.api_handler.return_bus_stop_name_json(svc_route[str(i + 1)][0])[0]))
             self.ui.BusSvcTable.setItem(i + 2 - svc_route_bypass, 2, QTableWidgetItem(f"{svc_route[str(i + 1)][1]} KM"))
 
         self.updateBusRouteTable()

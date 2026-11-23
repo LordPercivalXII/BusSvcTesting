@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 from TransportAPI.BusStopInfo import store_bus_stop_data
 from TransportAPI.BusService import store_bus_svc_data
-from UI.TransportUI import parse_to_ui
+from TransportAPI2.TransportUI import parse_to_ui
 from UtilLib.JSONHandler import setDebugState_JSONLib
 
 ENV_PATH = os.path.join(Path(os.path.expanduser("~")).resolve(), "RefKey.env")

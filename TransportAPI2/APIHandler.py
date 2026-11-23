@@ -143,7 +143,7 @@ class TransportAPIHandler:
             return True
         return time.time() - os.path.getmtime(handler.json_fp) > max_age
 
-    def request_arrival_time(self, bus_stop_code: str, explicit_buses: list, name: str):
+    def request_arrival_time(self, bus_stop_code: str, explicit_buses: list):
         curr_stop_returner = self.request_bus_stop_name(bus_stop_code)
         arrival_returner = self.request_bus_stop_timing(bus_stop_code, explicit_buses)
         main_returner = []
