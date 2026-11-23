@@ -2,7 +2,6 @@ import json
 import time
 import urllib.request, urllib.parse
 from urllib.error import HTTPError
-from UtilLib.JSONHandler import JSONHandler
 
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
@@ -30,7 +29,7 @@ class RequestHandler:
         for attempt in range(self.retries + 1):
             try:
                 with self.urlopen() as r:
-                    return JSONHandler.json_load(r.read().decode("utf-8"))
+                    return json.loads(r.read().decode("utf-8"))
             except HTTPError as e:                      # must come before OSError (it's a subclass)
                 last = RequestError(f"HTTP {e.code} {e.reason}", status=e.code, url=self.url)
                 if e.code not in RETRY_STATUS:          # 401/403/404 won't fix themselves
