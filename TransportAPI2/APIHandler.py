@@ -1,5 +1,7 @@
 import datetime
+import os
 import re
+import time
 from math import sqrt
 from threading import Thread
 from UtilLib.JSONHandler import JSONHandler
@@ -9,6 +11,12 @@ from TransportAPI2.RequestLink import URL_DATAMALL_API, DATAMALL_PAGE_SIZE
 
 # Global variables
 LON_LAT_CONV = 111139
+# Max cache age in seconds before a refresh is attempted
+CACHE_MAX_AGE = {
+    "bus_stops": 24 * 3600,
+    "bus_services": 24 * 3600,
+    "bus_routes": 7 * 24 * 3600,
+}
 SEATING = {
     "SEA": {
         "text": "Seating Available",
@@ -70,8 +78,9 @@ class TransportAPIHandler:
         self.bus_svc_data = JSONHandler("BusServiceData") # Bus Service Data Handler
         self.bus_route_data = JSONHandler("BusRouteData") # Bus Route Data Handler
 
-        # Init Store Bus Stop Data
-        self._store_bus_stop_data()
+        # Load cached data; refresh anything missing or stale
+        self.refresh_errors = {}
+        self.refresh_cache()
 
     def _get(self, key, **params):
         return RequestHandler(URL_DATAMALL_API[key], headers=self._headers, params=params).get_json()
@@ -93,24 +102,50 @@ class TransportAPIHandler:
         except RequestError as e:
             self.refresh_errors[name] = e
             self.logger.error(f"{name} refresh failed, keeping existing cache: {e}")
+        except Exception as e:  # never let a thread die silently
+            self.refresh_errors[name] = e
+            self.logger.error(f"{name} refresh crashed: {type(e).__name__}: {e}")
 
-    def _store_bus_stop_data(self):
+    def refresh_cache(self, force: bool = False):
         """
-        Store bus stop data
-        :return:
+        Load cached DataMall data, refreshing any cache that is missing, stale or forced.
+        Failed refreshes fall back to the existing cache file if there is one.
+        :param force: Refresh all caches regardless of age
+        :return: True if every refresh that was attempted succeeded
         """
+        caches = (
+            ("bus_stops", self.bus_stop_data, self.store_bus_stop_data),
+            ("bus_services", self.bus_svc_data, self.store_bus_svc_data),
+            ("bus_routes", self.bus_route_data, self.store_bus_route_data),
+        )
         self.refresh_errors = {}
-        threads = [Thread(target=self._refresh, args=(n, f)) for n, f in (
-            ("bus_stops", self.store_bus_stop_data),
-            ("bus_services", self.store_bus_svc_data),
-            ("bus_routes", self.store_bus_route_data))]
+        threads = []
+
+        for name, handler, store_fn in caches:
+            if force or self._cache_is_stale(handler, CACHE_MAX_AGE[name]):
+                threads.append(Thread(target=self._refresh, args=(name, store_fn)))
+            else:
+                handler.formulate_json()
+
         for t in threads: t.start()
         for t in threads: t.join()
+
+        # Fall back to stale cache files for any refresh that failed
+        for name, handler, _ in caches:
+            if name in self.refresh_errors and os.path.exists(handler.json_fp):
+                handler.formulate_json()
+
         return not self.refresh_errors
 
+    @staticmethod
+    def _cache_is_stale(handler: JSONHandler, max_age: int):
+        if not os.path.exists(handler.json_fp):
+            return True
+        return time.time() - os.path.getmtime(handler.json_fp) > max_age
+
     def request_arrival_time(self, bus_stop_code: str, explicit_buses: list, name: str):
-        curr_stop_returner = self.request_bus_stop_name(bus_stop_code, self.api_key)
-        arrival_returner = self.request_bus_stop_timing(bus_stop_code, self.api_key, explicit_buses)
+        curr_stop_returner = self.request_bus_stop_name(bus_stop_code)
+        arrival_returner = self.request_bus_stop_timing(bus_stop_code, explicit_buses)
         main_returner = []
 
         if curr_stop_returner[2] is True:
@@ -139,21 +174,22 @@ class TransportAPIHandler:
         for arrival_data in arrival_returner:
             svc_info_returner = self.return_bus_svc_json(arrival_data[0], 1)
 
-            if svc_info_returner[4] != arrival_data[18] and svc_info_returner[5] != arrival_data[19]:
-                svc_info_returner = self.return_bus_svc_json(arrival_data[0], 2)
+            if svc_info_returner is None or \
+                    (svc_info_returner[4] != arrival_data[18] or svc_info_returner[5] != arrival_data[19]):
+                svc_info_returner = self.return_bus_svc_json(arrival_data[0], 2) or svc_info_returner
 
-            if svc_info_returner[7] is False:
-                svc_info = f"{self.return_bus_stop_name_json(svc_info_returner[4])[0]} >>> " \
-                           f"{self.return_bus_stop_name_json(svc_info_returner[5])[0]} " \
-                           f"[{svc_info_returner[3]}]"
+            if svc_info_returner is None:
+                svc_info = "This service does not exist."
 
-            elif svc_info_returner[7] is True:
-                svc_info = f"Loop @ {svc_info_returner[6]} to " \
-                           f"{self.return_bus_stop_name_json(svc_info_returner[5])[0]} " \
+            elif svc_info_returner[7] is False:
+                svc_info = f"{self._stop_name(svc_info_returner[4])} >>> " \
+                           f"{self._stop_name(svc_info_returner[5])} " \
                            f"[{svc_info_returner[3]}]"
 
             else:
-                svc_info = f"This service does not exist."
+                svc_info = f"Loop @ {svc_info_returner[6]} to " \
+                           f"{self._stop_name(svc_info_returner[5])} " \
+                           f"[{svc_info_returner[3]}]"
 
             print(
                 f"Service [{arrival_data[0]}] | {arrival_data[1]}\n"
@@ -206,25 +242,38 @@ class TransportAPIHandler:
         return returner
 
     # Bus Arrival Functions
-    def interpret_seating(self, seating: str, use_emoji: bool = False, retain_sf: bool = False):
-        for seating_data in self.SEATING:
-            if seating == seating_data[0]:
-                if use_emoji:
-                    return seating_data[2]
-                elif not retain_sf:
-                    return seating_data[1]
-                else:
-                    return seating_data[0]
-        return ""
+    @staticmethod
+    def interpret_seating(seating: str, use_emoji: bool = False, retain_sf: bool = False):
+        info = SEATING.get(seating)
+        if info is None:
+            return ""
+        if use_emoji:
+            return info["emoji"]
+        return seating if retain_sf else info["text"]
 
-    def interpret_type(self, bus_type: str, retain_sf: bool = False):
-        for type_data in self.BUS_TYPE:
-            if bus_type == type_data[0]:
-                if not retain_sf:
-                    return type_data[1]
-                else:
-                    return type_data[0]
-        return ""
+    @staticmethod
+    def interpret_type(bus_type: str, retain_sf: bool = False):
+        info = BUS_TYPE.get(bus_type)
+        if info is None:
+            return ""
+        return bus_type if retain_sf else info["text"]
+
+    @staticmethod
+    def _parse_eta(next_bus: dict, now: datetime.datetime):
+        """
+        Parse one NextBus entry.
+        :return: (label, [HH, MM, SS], minutes) - minutes is -1 when no bus is in service
+        """
+        if not next_bus.get("EstimatedArrival"):
+            return "Not in Service", ["X", "X", "X"], -1
+
+        eta = datetime.datetime.fromisoformat(next_bus["EstimatedArrival"])  # keeps +08:00
+        minutes = round((eta - now).total_seconds() / 60)
+        nb_time = eta.strftime("%H:%M:%S").split(":")
+
+        if minutes < 1:
+            return "Arriving", nb_time, 0
+        return f"{minutes} min", nb_time, minutes
 
     @staticmethod
     def calculate_est_duration(dur_list: list):
@@ -243,7 +292,7 @@ class TransportAPIHandler:
 
         return round(est_duration, 1)
 
-    def request_bus_stop_timing(self, bus_stop_code: int | str, api_key: str, svc_num: list,
+    def request_bus_stop_timing(self, bus_stop_code: int | str, svc_filter: list | None = None,
                                 fallback_header: bool = False, debug: bool = False, return_svc_list: bool = False,
                                 no_exact_time=False, short_forms=False, use_emojis=False):
         """
@@ -251,8 +300,7 @@ class TransportAPIHandler:
         For a specific number in Services, define the Service Number.
         :param bus_stop_code: The 5-digit Bus Stop code. Should be in string, integer not recommended for it may remove
                               leading zeros.
-        :param api_key: The API Key to allow calling of API services.
-        :param svc_num: A list of Bus Service Numbers to explicitly see. Optional, either string or integer is accepted in a
+        :param svc_filter: A list of Bus Service Numbers to explicitly see. Optional, either string or integer is accepted in a
                         list.
         :param fallback_header: A boolean state that determines whether the fallback header should be used. (Shows the code)
         :param debug: A boolean state to show debug text
@@ -299,9 +347,7 @@ class TransportAPIHandler:
 
         bus_list = self.sort_bus_svc_list(bus_list)
 
-        # print(bus_list)
         if return_svc_list:
-            print(bus_list)
             return bus_list
 
         if fallback_header and debug:
@@ -315,18 +361,8 @@ class TransportAPIHandler:
         for bus_ref in bus_list:
             # Should there be an explicit to see list of bus stop numbers
             # i.e. 3 to be seen from 3, 34, ...
-            if len(svc_num) > 0:
-                for svc_check in svc_num:
-                    svc_check_test = False
-
-                    print(f"CHECK: {svc_check} VS {bus_ref}")
-
-                    if svc_check == str(bus_ref):
-                        svc_check_test = True
-                        break
-
-                if not svc_check_test:
-                    continue
+            if svc_filter and str(bus_ref) not in {str(s).strip() for s in svc_filter}:
+                continue
 
             search_svc = False
 
@@ -339,97 +375,17 @@ class TransportAPIHandler:
             if not search_svc:
                 continue
 
-            # Handle 1st Bus
-            if bus_svc["NextBus"]["EstimatedArrival"] != "":
-                eta = datetime.datetime.fromisoformat(bus_svc["NextBus"]["EstimatedArrival"])
+            # Move empty slots to the end so a missing 1st/2nd bus is filled by the next one
+            # (whole entries move, so Load/Type/Visit/Monitored/Origin/Destination stay together)
+            slots = [bus_svc["NextBus"], bus_svc["NextBus2"], bus_svc["NextBus3"]]
+            filled = [b for b in slots if b.get("EstimatedArrival")]
+            blank = {key: ("" if key != "Monitored" else 0) for key in slots[0]}
+            bus_svc["NextBus"], bus_svc["NextBus2"], bus_svc["NextBus3"] = (filled + [dict(blank) for _ in range(3)])[:3]
 
-                duration = round((eta - dt).total_seconds() / 60)
-                if duration < 1 or duration > 1000:
-                    next_bus = "Arriving"
-                    duration = 0
-                else:
-                    next_bus = f"{duration} min"
-
-            else:
-                next_bus = "Not in Service"
-                nb_time = ["X", "X", "X"]
-                duration = -1
-
-            # Handle 2nd Bus
-            if bus_svc["NextBus2"]["EstimatedArrival"] != "":
-                eta = datetime.datetime.fromisoformat(bus_svc["NextBus2"]["EstimatedArrival"])
-
-                duration = round((eta - dt).total_seconds() / 60)
-                if duration2 < 1 or duration2 > 1000:
-                    next_bus2 = "Arriving"
-                    duration2 = 0
-                else:
-                    next_bus2 = f"{duration2} min"
-
-            else:
-                next_bus2 = "Not in Service"
-                nb_time2 = ["X", "X", "X"]
-                duration2 = -1
-
-            # Handle 3rd Bus
-            if bus_svc["NextBus3"]["EstimatedArrival"] != "":
-                eta = datetime.datetime.fromisoformat(bus_svc["NextBus3"]["EstimatedArrival"])
-
-                duration = round((eta - dt).total_seconds() / 60)
-                if duration3 < 1 or duration3 > 1000:
-                    next_bus3 = "Arriving"
-                    duration3 = 0
-                else:
-                    next_bus3 = f"{duration3} min"
-
-            else:
-                next_bus3 = "Not in Service"
-                nb_time3 = ["X", "X", "X"]
-                duration3 = -1
-
-            # Deal with Post-Time Buses
-            if duration3 < 0 or duration3 is None:
-                # Remove 3rd bus
-                next_bus3 = "Not in Service"
-                nb_time3 = ["X", "X", "X"]
-                duration3 = 0
-                bus_svc['NextBus3']['Load'] = ""
-                bus_svc['NextBus3']['Type'] = ""
-                bus_svc['NextBus3']['VisitNumber'] = ""
-
-            if duration2 < 0 or duration2 is None:
-                # Move 3rd bus to 2nd
-                duration2 = duration3
-                next_bus2 = next_bus3
-                nb_time2 = nb_time3
-                bus_svc['NextBus2']['Load'] = bus_svc['NextBus3']['Load']
-                bus_svc['NextBus2']['Type'] = bus_svc['NextBus3']['Type']
-                bus_svc['NextBus2']['VisitNumber'] = bus_svc['NextBus3']['VisitNumber']
-
-                # Remove 3rd bus
-                next_bus3 = "Not in Service"
-                nb_time3 = ["X", "X", "X"]
-                duration3 = 0
-                bus_svc['NextBus3']['Load'] = ""
-                bus_svc['NextBus3']['Type'] = ""
-                bus_svc['NextBus3']['VisitNumber'] = ""
-
-            if duration < 0 or duration is None:
-                # Move 2nd bus to 1st
-                duration = duration2
-                next_bus = next_bus2
-                nb_time = nb_time2
-                bus_svc['NextBus']['Load'] = bus_svc['NextBus2']['Load']
-                bus_svc['NextBus']['Type'] = bus_svc['NextBus2']['Type']
-                bus_svc['NextBus']['VisitNumber'] = bus_svc['NextBus2']['VisitNumber']
-
-                # Remove 2nd bus
-                next_bus2 = "Not in Service"
-                nb_time2 = ["X", "X", "X"]
-                duration2 = 0
-                bus_svc['NextBus2']['Load'] = ""
-                bus_svc['NextBus2']['Type'] = ""
-                bus_svc['NextBus2']['VisitNumber'] = ""
+            # Handle 1st, 2nd & 3rd Bus
+            next_bus, nb_time, duration = self._parse_eta(bus_svc["NextBus"], dt)
+            next_bus2, nb_time2, duration2 = self._parse_eta(bus_svc["NextBus2"], dt)
+            next_bus3, nb_time3, duration3 = self._parse_eta(bus_svc["NextBus3"], dt)
 
             # Estimation of Durations
             if (bus_svc['NextBus']['VisitNumber'] == "1" or bus_svc['NextBus']['VisitNumber'] == "") and \
@@ -483,11 +439,11 @@ class TransportAPIHandler:
                     f"2. {next_bus2} @ {nb_time2[0]}:{nb_time2[1]}:{nb_time2[2]} "
                     f"({bus_svc['NextBus2']['EstimatedArrival']}) | {self.interpret_seating(bus_svc['NextBus2']['Load'])} | "
                     f"{self.interpret_type(bus_svc['NextBus2']['Type'])}"
-                    f" | Visit: {bus_svc['NextBus2']['VisitNumber']} | Accurate: {bool(bus_svc['NextBus']['Monitored'])}\n"
+                    f" | Visit: {bus_svc['NextBus2']['VisitNumber']} | Accurate: {bool(bus_svc['NextBus2']['Monitored'])}\n"
                     f"3. {next_bus3} @ {nb_time3[0]}:{nb_time3[1]}:{nb_time3[2]} "
                     f"({bus_svc['NextBus3']['EstimatedArrival']}) | {self.interpret_seating(bus_svc['NextBus3']['Load'])} | "
                     f"{self.interpret_type(bus_svc['NextBus3']['Type'])}"
-                    f" | Visit: {bus_svc['NextBus3']['VisitNumber']} | Accurate: {bool(bus_svc['NextBus']['Monitored'])}\n"
+                    f" | Visit: {bus_svc['NextBus3']['VisitNumber']} | Accurate: {bool(bus_svc['NextBus3']['Monitored'])}\n"
                 )
 
                 print(
@@ -564,6 +520,10 @@ class TransportAPIHandler:
 
         return None
 
+    def _stop_name(self, bus_stop_code: str):
+        hit = self.return_bus_stop_name_json(bus_stop_code)
+        return hit[0] if hit else bus_stop_code
+
     def request_bus_stop_code_from_name(self, stop_name: str, road_name: str = "", return_first_val: bool = False):
         matched_values = []
 
@@ -591,12 +551,12 @@ class TransportAPIHandler:
         sorted_nearby_stops = []
         disp_sorter = []
 
-        lon_m = lon * self.LON_LAT_CONV
-        lat_m = lat * self.LON_LAT_CONV
+        lon_m = lon * LON_LAT_CONV
+        lat_m = lat * LON_LAT_CONV
 
         for data in self.bus_stop_data.return_specific_json("value"):
-            bus_lon_m = data["Longitude"] * self.LON_LAT_CONV
-            bus_lat_m = data["Latitude"] * self.LON_LAT_CONV
+            bus_lon_m = data["Longitude"] * LON_LAT_CONV
+            bus_lat_m = data["Latitude"] * LON_LAT_CONV
 
             diff_lon = max(lon_m, bus_lon_m) - min(lon_m, bus_lon_m)
             diff_lat = max(lat_m, bus_lat_m) - min(lat_m, bus_lat_m)
@@ -644,9 +604,8 @@ class TransportAPIHandler:
                 if data["Direction"] == 1 and data["LoopDesc"] != "":
                     is_loop = True
 
-                for (k, v) in self.DBL_LOOP_DATA.items():
-                    if k == data["ServiceNo"]:
-                        data["LoopDesc"] = v
+                if data["ServiceNo"] in DBL_LOOP_DATA:
+                    data["LoopDesc"] = DBL_LOOP_DATA[data["ServiceNo"]]
 
                 return (
                     data["ServiceNo"],
@@ -687,9 +646,8 @@ class TransportAPIHandler:
                 if data["Direction"] == 1 and data["LoopDesc"] != "":
                     is_loop = True
 
-                for (k, v) in self.DBL_LOOP_DATA.items():
-                    if k == data["ServiceNo"]:
-                        data["LoopDesc"] = v
+                if data["ServiceNo"] in DBL_LOOP_DATA:
+                    data["LoopDesc"] = DBL_LOOP_DATA[data["ServiceNo"]]
 
                 bus_svc_list.append((
                     data["ServiceNo"],
@@ -710,47 +668,18 @@ class TransportAPIHandler:
         return bus_svc_list
 
     # Bus Route Functions
-    def store_bus_route_data(self, api_key: str):
-        curr_data = {"value": self._get_all("bus_routes")}
-        for data in curr_data["value"]:
-            # print(f"PROC: {data['ServiceNo']} | {data['Direction']} | {data['StopSequence']} | {data['BusStopCode']}")
-            # print(f"PROC: {type(data['ServiceNo'])} | {type(data['Direction'])} | {type(data['StopSequence'])} | {type(data['BusStopCode'])}")
-            # print(f"PROC: {data['ServiceNo']} in bus_route_data.json_data: {data["ServiceNo"] in self.bus_route_data.json_data}")
+    def store_bus_route_data(self):
+        """
+        Rebuild the route cache as {ServiceNo: {Direction: {StopSequence: (BusStopCode, Distance)}}}.
+        Built from scratch so withdrawn services do not linger.
+        """
+        routes = {}
+        for data in self._get_all("bus_routes"):
+            directions = routes.setdefault(data["ServiceNo"], {})
+            stops = directions.setdefault(str(data["Direction"]), {})
+            stops[str(data["StopSequence"])] = (data["BusStopCode"], data["Distance"])
 
-            # Create Entry if not Exist
-            if data["ServiceNo"] not in self.bus_route_data.json_data:
-                # print(f"PROC: CREATE FOR {data['ServiceNo']}")
-                self.bus_route_data.update_specific_json(
-                    data["ServiceNo"],
-                    {
-                        str(data["Direction"]): {
-                            str(data["StopSequence"]): (data["BusStopCode"], data["Distance"])
-                        }
-                    }
-                )
-                # print(f"PROC: DIRECTION: {data['Direction']} | STOP: {data['StopSequence']} | BUS: {data['BusStopCode']} | DISTANCE: {data['Distance']}")
-            # Amend existing values
-            else:
-                route_dict = self.bus_route_data.return_specific_json(data["ServiceNo"])
-                # print(f"PROC: {data['ServiceNo']} | {data['Direction']}")
-                # print(f"{route_dict}")
-
-                # print(f"PROC: {data['Direction']} in route_dict: {data["Direction"] in route_dict}")
-                # print(f"PROC: Type: {type(data["Direction"])} | Keys: {data.keys()}")
-
-                if str(data["Direction"]) in route_dict:
-                    route_dict[str(data["Direction"])][str(data["StopSequence"])] = (data["BusStopCode"], data["Distance"])
-
-                else:
-                    route_dict[str(data["Direction"])] = {str(data["StopSequence"]): (data["BusStopCode"], data["Distance"])}
-
-                # print(route_dict)
-
-                self.bus_route_data.update_specific_json(data["ServiceNo"], route_dict)
-
-                # print(f"PROC: DIRECTION: {data['Direction']} | STOP: {data['StopSequence']} | BUS: {data['BusStopCode']} | DISTANCE: {data['Distance']}")
-
-        # bus_route_data.update_json(curr_data)
+        self.bus_route_data.update_json(routes)
         self.bus_route_data.update_json_file()
         self.bus_route_data.formulate_json()
         return None
