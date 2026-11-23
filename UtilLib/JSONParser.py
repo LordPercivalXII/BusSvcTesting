@@ -10,7 +10,7 @@ def json_dump(json_dict: dict):
     return json.dumps(json_dict, sort_keys=True, indent=4)
 
 
-def json_load(json_data: [str, bytes]):
+def json_load(json_data: str | bytes):
     """
     Function to convert JSON into Python Dictionary.
     :param json_data: JSON data to be converted into Dictionary format.

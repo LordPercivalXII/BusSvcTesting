@@ -5,7 +5,7 @@ from TransportAPI.BusArrival import request_bus_stop_timing
 from TransportAPI.BusRoute import get_bus_svc_route
 from TransportAPI.BusService import return_bus_svc_json, get_bus_svc_list, get_bus_svc_directions
 from TransportAPI.BusStopInfo import request_bus_stop_name_lta, return_bus_stop_name_json
-from UI.UI_TransportUI import Ui_TransportService
+from Qt5UI.UI_TransportUI import Ui_TransportService
 
 
 class TransportMenu(QMainWindow):
@@ -29,6 +29,9 @@ class TransportMenu(QMainWindow):
         bus_count = 0
         bus_stop_num = self.ui.BusStopNumber.text()
         svc_list_str = self.ui.ExplicitSvcList.text()
+
+        if bus_stop_num == "":
+            bus_stop_num = "00000"
 
         if svc_list_str == "":
             bus_svc_list = []

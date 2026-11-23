@@ -1,0 +1,12 @@
+import urllib.request
+
+
+class RequestHandler:
+    def __init__(self, url, method, headers=None):
+        self.url = url
+        self.method = method
+        self.headers = headers
+        self.request = urllib.request.Request(self.url, self.method, self.headers)
+
+    def urlopen(self):
+        return urllib.request.urlopen(self.request)

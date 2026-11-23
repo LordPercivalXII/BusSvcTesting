@@ -13,7 +13,7 @@ class JSONHandler:
 
     A class that is able to acquire JSON data from GitHub or from JSONLib.
     """
-    def __init__(self, json_data_name: str, json_dir: Path or str = ""):
+    def __init__(self, json_data_name: str, json_dir: Path | str = ""):
         """
         Initialise JSONHandler to acquire data.
         :param json_data_name: Name of JSON File, without .json suffix
@@ -49,7 +49,7 @@ class JSONHandler:
         :param data_dict: Data in Dictionary Form
         :return:
         """
-        if os.path.exists(self.json_fp) is False:
+        if not os.path.exists(self.json_fp):
 
             self.logger.info(f"JSON File ({self.json}) does not exist. Creating...", to_console=False)
 
@@ -136,14 +136,14 @@ class JSONHandler:
         del self.json_data[key]
 
 
-def setDebugState_JSONLib(state: bool, fp: Path or str = ""):
+def setDebugState_JSONLib(state: bool, fp: Path | str = ""):
     """
     Method to set Filepath of JSONLib.
     :param fp:
     :param state:
     :return:
     """
-    if state is False:
+    if not state:
         global JSON_LIB
         if fp == "":
             pass

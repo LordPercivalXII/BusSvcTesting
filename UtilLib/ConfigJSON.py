@@ -69,7 +69,7 @@ class ConfigJSON(JSONHandler):
         else:
             return self.return_specific_json("database_dir_linux")
 
-    def updateExcelPath(self, fp: Path or str):
+    def updateExcelPath(self, fp: Path | str):
         """
         All in one method of updating Excel FP based on platform type.
 
