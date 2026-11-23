@@ -35,8 +35,7 @@ class JSONHandler:
             json_ref.close()
 
         self.logger.info(
-            "Formulated & ascertained JSON File Data. Data can now be acquired/set with get/set functions.",
-            to_console=False
+            f"Formulated & ascertained JSON File Data in {self.json_fp}. Data can now be acquired/set with get/set functions."
         )
 
         return True
@@ -51,7 +50,7 @@ class JSONHandler:
         """
         if not os.path.exists(self.json_fp):
 
-            self.logger.info(f"JSON File ({self.json}) does not exist. Creating...", to_console=False)
+            self.logger.info(f"JSON File ({self.json}) does not exist. Creating in {self.json_fp}...")
 
             with open(self.json_fp, "w") as json_file:
                 json_file.write(self.json_dump(data_dict))
@@ -59,7 +58,7 @@ class JSONHandler:
 
             return True
         else:
-            self.logger.info(f"JSON File ({self.json}) already exists. Skipping...", to_console=False)
+            self.logger.info(f"JSON File ({self.json}) already exists in {self.json_fp}. Skipping...")
             return False
 
     def update_json_file(self):
@@ -73,8 +72,7 @@ class JSONHandler:
             json_file.close()
 
         self.logger.info(
-            "JSON File has been updated. All previous data entries have been overridden.",
-            to_console=False
+            "JSON File has been updated. All previous data entries have been overridden."
         )
 
     def return_json(self):
